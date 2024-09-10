@@ -1,0 +1,64 @@
+import smtplib
+import os
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
+
+def send_email(to_email, subject, body, attachment_path, from_email, password):
+    # Create the email object
+    msg = MIMEMultipart()
+    msg['From'] = from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+
+    # Attach the body with the msg instance
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Attach the PDF file
+    with open(attachment_path, "rb") as attachment:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(attachment.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f"attachment; filename= {os.path.basename(attachment_path)}")
+        msg.attach(part)
+
+    # Connect to the Outlook server
+    server = smtplib.SMTP('smtp.office365.com', 587)
+    server.starttls()
+    server.login(from_email, password)
+
+    # Send the email
+    server.sendmail(from_email, to_email, msg.as_string())
+    server.quit()
+
+# Directory containing the PDF files
+pdf_directory = r"C:\Users\JoshC\Desktop\InvoiceProcessing\Finish"
+
+# List of all PDF files in the directory
+pdf_files = [f for f in os.listdir(pdf_directory) if f.endswith('.pdf')]
+
+# Email address to send to (test email)
+test_recipient_email = "slifreightpmt@sunriselogisticsinc.com"
+
+# Your Outlook email and password
+from_email = "Vasqueztruckingllc@hotmail.com"
+password = "Camion122073!"
+
+# Email body
+email_body = """
+Thank You
+
+I've attached the Invoice to this email.
+
+Hector
+"""
+
+# Send emails for each PDF file
+for pdf_file in pdf_files:
+    # Extract the bill number by removing the 'Merged_LoadConfirmation' part
+    bill_number = os.path.splitext(pdf_file)[0].replace('Merged_LoadConfirmation', '')
+    subject = f"VASQUEZ TRUCKING LLC BILL #{bill_number}"
+    pdf_path = os.path.join(pdf_directory, pdf_file)
+    send_email(test_recipient_email, subject, email_body, pdf_path, from_email, password)
+    print(f"Sent email for {pdf_file}")
