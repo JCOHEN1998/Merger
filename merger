@@ -1,0 +1,83 @@
+import os
+from PyPDF2 import PdfMerger
+from PIL import Image, ImageFile
+
+# Allow PIL to load truncated images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+def convert_image_to_pdf(image_path):
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert('RGB')
+            pdf_path = image_path.replace('.jpg', '.pdf').replace('.jpeg', '.pdf').replace('.png', '.pdf')
+            img.save(pdf_path, 'PDF')
+            print(f"Converted {image_path} to {pdf_path}")
+            return pdf_path
+    except Exception as e:
+        print(f"Error converting {image_path} to PDF: {e}")
+        return None
+
+def merge_pdfs_in_folder(folder_path, output_folder, load_confirmation_keyword):
+    # Ensure the output folder exists
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Create a PdfMerger object
+    merger = PdfMerger()
+    
+    # List to hold PDF file paths
+    pdf_files = []
+    
+    # Iterate through all files in the specified folder
+    for filename in os.listdir(folder_path):
+        if filename.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png')):
+            file_path = os.path.join(folder_path, filename)
+            # Check if the current object is a file
+            if os.path.isfile(file_path):
+                # Convert image files to PDF
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    file_path = convert_image_to_pdf(file_path)
+                if file_path:  # Only add to the list if conversion was successful
+                    pdf_files.append(file_path)
+    
+    # Find the load confirmation file and use its name for the merged file
+    load_confirmation_files = [file for file in pdf_files if load_confirmation_keyword in os.path.basename(file)]
+    
+    if not load_confirmation_files:
+        print(f"No load confirmation files found with keyword '{load_confirmation_keyword}'.")
+        return
+
+    load_confirmation_file = load_confirmation_files[0]
+    load_confirmation_basename = os.path.splitext(os.path.basename(load_confirmation_file))[0]
+    
+    # Extract numbers from the load confirmation basename
+    invoice_number = ''.join(filter(str.isdigit, load_confirmation_basename))
+    output_file = f"Invoice_{invoice_number}.pdf"
+    output_file_path = os.path.join(output_folder, output_file)
+    
+    # Merge the load confirmation PDF first
+    try:
+        merger.append(load_confirmation_file)
+    except Exception as e:
+        print(f"Error appending {load_confirmation_file} to merger: {e}")
+    
+    # Merge the rest of the PDFs
+    other_files = [file for file in pdf_files if file not in load_confirmation_files]
+    for file in other_files:
+        try:
+            merger.append(file)
+        except Exception as e:
+            print(f"Error appending {file} to merger: {e}")
+    
+    # Write all the merged PDFs to the output file
+    try:
+        merger.write(output_file_path)
+        merger.close()
+        print(f"All PDF files in {folder_path} have been merged into {output_file_path}")
+    except Exception as e:
+        print(f"Error writing merged PDF to {output_file_path}: {e}")
+
+if __name__ == "__main__":
+    folder_path = r"C:\Users\JoshC\Desktop\InvoiceProcessing\Merger"
+    output_folder = r"C:\Users\JoshC\Desktop\InvoiceProcessing\Merged Complete"
+    load_confirmation_keyword = "LoadConfirmation"  # Adjust this keyword as needed
+    merge_pdfs_in_folder(folder_path, output_folder, load_confirmation_keyword)
