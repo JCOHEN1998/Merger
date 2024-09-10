@@ -1,0 +1,219 @@
+import os
+import re
+import io
+import shutil
+from PyPDF2 import PdfReader, PdfWriter
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from openpyxl import load_workbook
+import win32com.client as win32
+
+input_directory = r"C:\Users\JoshC\Desktop\InvoiceProcessing\Input"
+template_path = r"C:\Users\JoshC\Desktop\InvoiceProcessing\Template\Invoice Template.xlsx"
+output_directory = r"C:\Users\JoshC\Desktop\InvoiceProcessing\Output"
+
+# Create directories if they do not exist
+os.makedirs(input_directory, exist_ok=True)
+os.makedirs(output_directory, exist_ok=True)
+
+def clear_com_cache():
+    gen_py_path = os.path.join(os.environ['LOCALAPPDATA'], 'Temp', 'gen_py')
+    if os.path.exists(gen_py_path):
+        shutil.rmtree(gen_py_path)
+    import win32com.client.gencache
+    win32com.client.gencache.is_readonly = False
+    win32com.client.gencache.Rebuild()
+
+clear_com_cache()
+
+# Function to extract the date from the bottom of the load confirmation PDF
+def extract_date_from_pdf(pdf_path):
+    pdf_reader = PdfReader(pdf_path)
+    page = pdf_reader.pages[-1]  # Assume the date is on the last page
+    text = page.extract_text()
+    date_pattern = r"\b(\d{1,2}/\d{1,2}/\d{4})\b"
+    date_match = re.search(date_pattern, text)
+    if date_match:
+        return date_match.group(1)
+    else:
+        return None
+
+# Function to process a single PDF by adding a signature and date
+def process_pdf(input_pdf_path, output_pdf_path, date):
+    pdf_reader = PdfReader(input_pdf_path)
+    pdf_writer = PdfWriter()
+
+    packet = io.BytesIO()
+    can = canvas.Canvas(packet, pagesize=letter)
+    
+    # Set font size for text
+    can.setFont("Helvetica", 12)
+
+    # Coordinates for signature and date
+    signature_position = (180, 250)
+    date_position = (450, 250)
+
+    # Add initials "HV" and the extracted date
+    can.drawString(signature_position[0], signature_position[1], "HECTOR VASQUEZ")
+    can.drawString(date_position[0], date_position[1], date)
+    can.save()
+
+    packet.seek(0)
+    new_pdf = PdfReader(packet)
+
+    for page_num in range(len(pdf_reader.pages)):
+        page = pdf_reader.pages[page_num]
+        if page_num == len(pdf_reader.pages) - 1:  # Add signature and date to the last page
+            page.merge_page(new_pdf.pages[0])
+        pdf_writer.add_page(page)
+
+    with open(output_pdf_path, "wb") as output_pdf:
+        pdf_writer.write(output_pdf)
+
+# Function to extract payment information from the last page of the PDF
+def extract_payment_info(pdf_path):
+    pdf_reader = PdfReader(pdf_path)
+    page = pdf_reader.pages[-1]  # Payment information is on the last page
+    text = page.extract_text()
+
+    # Define regular expressions for matching dollar amounts, Billing #, Move #, Route ID, and Date
+    patterns = {
+        "Load Broker Line Haul": r"Load Broker Line Haul\s+\d+\s+\$([\d,]+\.\d{2})",
+        "Carrier - Stop Pay": r"Carrier - Stop Pay\s+(\d+)\s+\$([\d,]+\.\d{2})",
+        "Carrier - Detention - Hourly": r"Carrier - Detention - Hourly\s+([\d.]+)\s+\$([\d,]+\.\d{2})\s+HRS\s+\$([\d,]+\.\d{2})",
+        "Carrier - Detention - Flat": r"Carrier - Detention - Flat\s+(\d+)\s+\$([\d,]+\.\d{2})\s+FLT\s+\$([\d,]+\.\d{2})",
+        "Carrier - Lumper Reimbursement": r"Carrier - Lumper Reimbursement\s+\d+\s+\$([\d,]+\.\d{2})",
+        "Carrier - Returns": r"Carrier - Returns\s+\d+\s+\$([\d,]+\.\d{2})",
+        "Carrier - Layover": r"Carrier - Layover\s+\d+\s+\$([\d,]+\.\d{2})",
+        "Billing #": r"Billing #:\s*(\d+)",
+        "Move #": r"Move #:\s*(\d+)",
+        "Route ID": r"Route ID:\s*([A-Za-z0-9]*)",
+        "Date": r"\b(\d{1,2}/\d{1,2}/\d{4})\b"
+    }
+
+    payment_info = {
+        "Load Broker Line Haul": 0.0,
+        "Carrier - Stop Pay": 0.0,
+        "Carrier - Detention - Hourly": 0.0,
+        "Carrier - Detention - Flat": 0.0,
+        "Carrier - Lumper Reimbursement": 0.0,
+        "Carrier - Returns": 0.0,
+        "Carrier - Layover": 0.0,
+        "Billing #": "",
+        "Move #": "",
+        "Route ID": "",
+        "Date": ""
+    }
+
+    for key, pattern in patterns.items():
+        matches = re.findall(pattern, text)
+        if matches:
+            for match in matches:
+                if key == "Carrier - Detention - Hourly":
+                    quantity = float(match[0].replace(",", ""))
+                    rate = float(match[1].replace(",", ""))
+                    payment_info[key] += quantity * rate
+                elif key == "Carrier - Detention - Flat":
+                    quantity = int(match[0].replace(",", ""))
+                    rate = float(match[1].replace(",", ""))
+                    payment_info[key] += quantity * rate
+                elif key == "Carrier - Stop Pay":
+                    quantity = int(match[0].replace(",", ""))
+                    rate = float(match[1].replace(",", ""))
+                    payment_info[key] = quantity * rate
+                elif key == "Route ID" and match.strip() == "820":
+                    payment_info[key] = ""
+                elif key in ["Billing #", "Move #", "Route ID", "Date"]:
+                    payment_info[key] = match if match.strip() else ""
+                else:
+                    payment_info[key] += float(match.replace(",", ""))
+
+    return payment_info
+
+# Function to write payment information to an Excel file
+def write_to_excel(data, excel_template_path, output_excel_path):
+    wb = load_workbook(excel_template_path)
+    ws = wb.active
+
+    # Map data to corresponding cells
+    ws['B15'] = data["Billing #"]
+    ws['B16'] = data["Move #"]
+    ws['B17'] = data["Route ID"]
+    ws['D15'] = data["Date"]
+    ws['D21'] = data["Load Broker Line Haul"]
+    ws['D22'] = data["Carrier - Lumper Reimbursement"]
+    ws['D23'] = data["Carrier - Stop Pay"]
+    ws['D24'] = data["Carrier - Detention - Hourly"]
+    ws['D25'] = data["Carrier - Detention - Flat"]
+    ws['D26'] = data["Carrier - Returns"]
+    ws['D27'] = data["Carrier - Layover"]
+
+    # Calculate the total
+    total = (data["Load Broker Line Haul"] + data["Carrier - Stop Pay"] +
+             data["Carrier - Detention - Hourly"] + data["Carrier - Detention - Flat"] +
+             data["Carrier - Lumper Reimbursement"] + data["Carrier - Returns"] +
+             data["Carrier - Layover"])
+    ws['D29'] = total
+
+    wb.save(output_excel_path)
+
+# Function to convert Excel to PDF using win32com
+def excel_to_pdf(excel_path, pdf_path):
+    excel = win32.gencache.EnsureDispatch('Excel.Application')
+    wb = excel.Workbooks.Open(excel_path)
+    ws = wb.Worksheets[1]
+    
+    ws.ExportAsFixedFormat(0, pdf_path)
+    
+    wb.Close(SaveChanges=False)
+    excel.Quit()
+
+# Function to merge two PDFs
+def merge_pdfs(pdf_paths, output_path):
+    pdf_writer = PdfWriter()
+    
+    for path in pdf_paths:
+        pdf_reader = PdfReader(path)
+        for page_num in range(len(pdf_reader.pages)):
+            pdf_writer.add_page(pdf_reader.pages[page_num])
+    
+    with open(output_path, "wb") as out_pdf:
+        pdf_writer.write(out_pdf)
+
+# Process all PDFs in the input directory
+for filename in os.listdir(input_directory):
+    if filename.endswith(".pdf"):
+        input_pdf_path = os.path.join(input_directory, filename)
+        
+        # Extract the date from the PDF
+        extracted_date = extract_date_from_pdf(input_pdf_path)
+        if extracted_date is None:
+            print(f"Date not found in {filename}. Skipping.")
+            continue
+
+        # Process the PDF to add signature and date
+        signed_pdf_path = os.path.join(output_directory, f"Signed_{filename}")
+        process_pdf(input_pdf_path, signed_pdf_path, extracted_date)
+        
+        # Extract payment information from the last page of the signed PDF
+        payment_info = extract_payment_info(signed_pdf_path)
+        print(f"Processed {filename}: {payment_info}")  # Debugging: Print payment info
+        
+        # Write payment information to Excel
+        output_excel_path = os.path.join(output_directory, f"Invoice_{filename.replace('.pdf', '.xlsx')}")
+        write_to_excel(payment_info, template_path, output_excel_path)
+        
+        # Convert Excel to PDF
+        output_excel_pdf_path = os.path.join(output_directory, f"Invoice_{filename.replace('.pdf', '_Invoice.pdf')}")
+        excel_to_pdf(output_excel_path, output_excel_pdf_path)
+        
+        # Merge signed PDF and Excel PDF with invoice first
+        merged_pdf_path = os.path.join(output_directory, f"Merged_{filename}")
+        merge_pdfs([output_excel_pdf_path, signed_pdf_path], merged_pdf_path)
+         
+        # Clean up intermediate files
+        os.remove(signed_pdf_path)
+        os.remove(output_excel_path)
+        os.remove(output_excel_pdf_path)
+
+print("Batch processing complete. Check the output directory for the merged PDFs.")
